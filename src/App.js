@@ -3,15 +3,21 @@ import React, { Suspense, useRef, useState, useEffect } from "react";
 import useKeyPress from "./useKeyPress";
 import { ContactShadows, Environment, useGLTF, OrbitControls } from "drei";
 import Shoe from "./Shoe";
+import Building from "./Building";
 import debounce from "lodash.debounce";
+import uniq from "lodash.uniq";
+import pluck from "lodash.pluck";
+import difference from "lodash.difference";
 
 import { Canvas, useFrame, useThree } from "react-three-fiber";
 import { Physics, useBox } from "@react-three/cannon";
-import { Vector3 } from "three";
-import { useCamera } from "@react-three/drei";
+import { Raycaster, Vector3, DoubleSide } from "three";
+import { useCamera, PerspectiveCamera, Line } from "@react-three/drei";
 import { Provider, atom, useAtom } from "jotai";
 
-const facingAtom = atom([1, 1, 0]);
+const facingAtom = atom([-5.3861516272095, 0, 5.483227951003158]);
+
+const IP = [214, 214, 214];
 
 function App() {
   return (
@@ -20,8 +26,9 @@ function App() {
         concurrent
         pixelRatio={[1, 1.5]}
         colorManagement
-        camera={{ zoom: 10, position: [100, 100, 100] }}
-        // camera={{ position: [5, 10, 10], fov: 100, zoom: 1 }}
+        orthographic
+        // camera={{ zoom: 10, position: [0, 100, 0] }}
+        camera={{ position: [10, 10, 10], fov: 1, zoom: 30 }}
       >
         <Provider>
           <Physics gravity={[0, 0, 0]}>
@@ -29,20 +36,26 @@ function App() {
             <directionalLight intensity={0.5} position={[4, 0, 0]} />
             <directionalLight intensity={4} position={[0, 4, 0]} />
             <ambientLight intensity={0.2} />
-            <Box speed={10} />
 
-            <Wall />
-            <Indicator />
+            <OrbitControls />
 
-            <ContactShadows
-              rotation-x={Math.PI / 2}
-              position={[0, -0.8, 0]}
-              opacity={0.25}
-              width={20}
-              height={20}
-              blur={2}
-              far={10}
-            />
+            <Ruler />
+
+            <Me />
+
+            <mesh name="building" position={[1, 1, 1]}>
+              <boxBufferGeometry attach="geometry" args={[3, 3, 3, 1]} />
+              <meshStandardMaterial
+                attach="material"
+                renderOrder={-9}
+                transparent={true}
+                opacity={1}
+                side={DoubleSide}
+                color="#000000"
+              />
+            </mesh>
+
+            {/* <Building position={[0, 0, 0]} /> */}
           </Physics>
         </Provider>
       </Canvas>
@@ -50,116 +63,65 @@ function App() {
   );
 }
 
-const Indicator = () => {
-  const { camera } = useThree();
-  const [facing, setFacing] = useAtom(facingAtom);
-  const [ref, api] = useBox(() => ({
-    position: facing,
-    args: [1, 1, 1],
-  }));
+const Ruler = () => (
+  <>
+    <Line
+      points={[
+        [0, 0, 0],
+        [0, 0, 10],
+      ]}
+      color="white"
+      position={[0, 0, 0]}
+    />
+    <Line
+      points={[
+        [0, 0, 0],
+        [0, 10, 0],
+      ]}
+      color="white"
+      position={[0, 0, 0]}
+    />
+    <Line
+      points={[
+        [0, 0, 0],
+        [10, 0, 0],
+      ]}
+      color="white"
+      position={[0, 0, 0]}
+    />
+  </>
+);
 
-  var vec = new Vector3(); // create once and reuse
-  var pos = new Vector3(); // create once and reuse
+const useBetween = ({ scene, raycaster }) => (p, q) => {
+  const pq = new Vector3().copy(p).sub(q).normalize();
+  raycaster.set(q, pq);
+  return raycaster.intersectObjects(scene.children);
+};
 
-  const handleClick = (event) => {
-    vec.set(
-      (event.clientX / window.innerWidth) * 2 - 1,
-      -(event.clientY / window.innerHeight) * 2 + 1,
-      0.5
-    );
+function uniqObjects(intersections) {
+  return uniq(pluck(intersections, "object"), "id");
+}
 
-    vec.unproject(camera);
+const setTransparency = (alpha) => (object) =>
+  (object.material.opacity = alpha);
 
-    vec.sub(camera.position).normalize();
-
-    const targetZ = 0;
-    var distance = (targetZ - camera.position.z) / vec.z;
-
-    pos.copy(camera.position).add(vec.multiplyScalar(distance));
-
-    setFacing(pos.toArray());
-    console.log(facing);
-  };
-
+const useTransparentOccludes = ({ ref }) => {
+  const { camera, scene, raycaster } = useThree();
+  const between = useBetween({ scene, raycaster });
+  const [occludes, setOccludes] = useState([]);
   useFrame(() => {
-    ref.current.position.set(...facing);
+    if (raycaster.camera) {
+      const p = ref.current.position;
+      const q = camera.position;
+      let current = uniqObjects(between(q, p));
+      // objects no longer occluding should be opaque
+      difference(occludes, current).map(setTransparency(1));
+      // objects occluding should be transparent
+      current.map(setTransparency(0.5));
+      setOccludes(current);
+    }
   });
-
-  useEffect(() => {
-    document.addEventListener("mousedown", handleClick);
-
-    return () => {
-      document.removeEventListener("mousedown", handleClick);
-    };
-  });
-  return (
-    <mesh ref={ref}>
-      <boxBufferGeometry attach="geometry" args={[1, 1, 1]} />
-      <meshStandardMaterial attach="material" color="#fff000" />
-    </mesh>
-  );
 };
-
-const Wall = () => {
-  const [ref, api] = useBox(() => ({
-    mass: 1,
-    position: [4, 0, 1],
-    args: [0.4, 1.1, 10.1, 1.1],
-    angularDamping: 1,
-    type: "Static",
-    collisionResponse: 0,
-  }));
-
-  return (
-    <mesh ref={ref}>
-      <boxBufferGeometry attach="geometry" args={[0.3, 1, 10, 1]} />
-      <meshStandardMaterial attach="material" color="#000000" />
-    </mesh>
-  );
-};
-
-// const Demo2 = () => (
-//   <Canvas concurrent pixelRatio={[1, 1.5]} camera={{ position: [0, 0, 2.75] }}>
-//     <ambientLight intensity={0.3} />
-//     <spotLight
-//       intensity={0.3}
-//       angle={0.1}
-//       penumbra={1}
-//       position={[5, 25, 20]}
-//     />
-//     <OrbitControls
-//       minPolarAngle={Math.PI / 2}
-//       maxPolarAngle={Math.PI / 2}
-//       enableZoom={true}
-//       enablePan={false}
-//     />
-//     <Suspense fallback={null}>
-//       <Shoe />
-//       <Environment files="royal_esplanade_1k.hdr" />
-//       <ContactShadows
-//         rotation-x={Math.PI / 2}
-//         position={[0, -0.8, 0]}
-//         opacity={0.25}
-//         width={10}
-//         height={10}
-//         blur={2}
-//         far={1}
-//       />
-//     </Suspense>
-//   </Canvas>
-// );
-
-// const Demo1 = () => (
-//   <Physics gravity={[0, 0, 0]}>
-//     <ambientLight intensity={0.3} />
-//     <directionalLight intensity={1} />
-//     <Box x={0} y={0} />
-//   </Physics>
-// );
-
-const X = 0;
-const Y = 1;
-const Z = 2;
 
 const useControls = ({ ref, speed = 1, api }) => {
   const up = useKeyPress("w");
@@ -167,6 +129,10 @@ const useControls = ({ ref, speed = 1, api }) => {
   const right = useKeyPress("d");
   const left = useKeyPress("a");
   const { camera } = useThree();
+
+  const X = 0;
+  const Y = 1;
+  const Z = 2;
 
   let v = [0, 0, 0];
 
@@ -176,32 +142,32 @@ const useControls = ({ ref, speed = 1, api }) => {
     if (right) v[X] = 1;
     if (left) v[X] = -1;
 
-    let vel = new Vector3(...v).normalize().multiplyScalar(speed).toArray();
+    // update the velocity of the object
+    ref.current.position.add(
+      new Vector3(...v).normalize().multiplyScalar(speed / 10)
+    );
 
-    api.velocity.set(...vel);
-
-    let p = new Vector3(...ref.current.position.toArray())
-      .addScalar(100)
-      .toArray();
-
-    camera.position.set(...p);
+    // update the camera to follow and look at object
+    if (ref.current) {
+      camera.position.copy(ref.current.position).add(new Vector3(...IP));
+      camera.lookAt(ref.current.position);
+    }
   });
 };
 
-function Box({ speed }) {
-  const [ref, api] = useBox(() => ({
-    mass: 1,
-    position: [0, 0, 0],
-    onCollide: debounce(() => console.log("welcome to the shop"), 10),
-    angularDamping: 1,
-    collisionResponse: 0,
-  }));
-  useControls({ speed, ref, api });
-
+function Me() {
+  const ref = useRef();
+  useTransparentOccludes({ ref });
+  useControls({ ref });
+  // return null;
   return (
-    <mesh ref={ref}>
-      <boxBufferGeometry attach="geometry" args={[0.5, 1, 0.5, 1]} />
-      <meshStandardMaterial attach="material" color="blue " />
+    <mesh ref={ref} name="bob" position={[1, 1, 1]}>
+      <boxBufferGeometry attach="geometry" args={[1, 1, 1, 1]} />
+      <meshStandardMaterial
+        attach="material"
+        transparent={true}
+        color="#000000"
+      />
     </mesh>
   );
 }
